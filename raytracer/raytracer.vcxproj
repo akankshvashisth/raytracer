@@ -60,7 +60,7 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <AdditionalOptions>--expt-extended-lambda --verbose --resource-usage --maxrregcount 32 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>--expt-extended-lambda --verbose --resource-usage %(AdditionalOptions)</AdditionalOptions>
       <CodeGeneration>compute_52,sm_52</CodeGeneration>
       <MaxRegCount>24</MaxRegCount>
     </CudaCompile>

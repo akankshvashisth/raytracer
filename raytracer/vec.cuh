@@ -32,6 +32,11 @@ namespace aks
 				detail::copy(m_data, ts...);
 			}
 
+			//AKS_FUNCTION_PREFIX_ATTR vec(T a, T b, T c) {
+			//	static_assert(3 == dimensions, "sizeof(ts) == dimensions");
+			//	detail::copy(m_data, a, b, c);
+			//}
+
 			template<typename U>
 			AKS_FUNCTION_PREFIX_ATTR vec(vec<U, N> const& v) {
 				auto it0 = data(), end = data() + dimensions; auto it1 = v.data(); for (; it0 != end; ++it0, ++it1) { *it0 = *it1; }
@@ -171,6 +176,30 @@ namespace aks
 				v.z()*u.x() - v.x()*u.z(),
 				v.x()*u.y() - v.y()*u.x()
 				);
+		}
+
+		template<typename T, typename U, size_t N>
+		AKS_FUNCTION_PREFIX_ATTR auto elemwise_mult(vec<T, N> const& v, vec<U, N> const& u) -> vec<decltype(T() * U()), N>
+		{
+			typedef vec<decltype(T() * U()), N> return_type;
+			return_type ret;
+			auto it2 = u.cbegin();
+			auto retit = ret.begin();
+			for (auto it = v.cbegin(), end = v.cend(); it != end; ++it, ++it2, ++retit)
+				*retit = *it * *it2;
+			return ret;
+		}
+
+		template<typename T, typename U, size_t N>
+		AKS_FUNCTION_PREFIX_ATTR auto elemwise_div(vec<T, N> const& v, vec<U, N> const& u) -> vec<decltype(T() / U()), N>
+		{
+			typedef vec<decltype(T() * U()), N> return_type;
+			return_type ret;
+			auto it2 = u.cbegin();
+			auto retit = ret.begin();
+			for (auto it = v.cbegin(), end = v.cend(); it != end; ++it, ++it2, ++retit)
+				*retit = *it / *it2;
+			return ret;
 		}
 
 		template<typename T, size_t N>
