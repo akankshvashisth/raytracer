@@ -14,6 +14,7 @@
 #include <curand_kernel.h>
 #include <cuda_library/cuda_context.hpp>
 #include <cuda_library/cuda_object.hpp>
+#include <iomanip>
 //#include <curand_uniform.h>
 
 //AKS_FUNCTION_PREFIX_ATTR double randZeroToOne()
@@ -28,7 +29,7 @@ namespace aks
 		template<typename T, size_t N>
 		std::ostream& operator<<(std::ostream& o, vec<T, N> const& v) {
 			auto it = v.cbegin(), end = v.cend();
-			o << *it++;
+			o << std::fixed << std::setw(4) << std::setprecision(1) << *it++;
 			for (; it != end;) o << " " << *it++;
 			/*o << "vec[" << N << "]{" << *it++;
 			for (; it != end;) o << "," << *it++;
@@ -350,6 +351,51 @@ struct InData
 	size_t max_ray_depth;
 };
 
+template<typename T>
+void print2D(T const& y)
+{
+	using namespace aks;
+	for (auto i = 0; i < get_max_dim<0>(y); ++i) {
+		for (auto j = 0; j < get_max_dim<1>(y); ++j) {
+			std::cout << y(i, j) << ",";
+		}
+		std::cout << std::endl;
+	}
+	std::cout << std::endl;
+}
+
+void print2D(aks::cuda_multi_dim_vector< aks::rx::vec3f, 2 > const& v)
+{
+	auto h = aks::to_host(v);
+	print2D(h.cview());
+}
+
+template<typename T>
+void doclear(T& t) {
+	aks::naryOp(t.view(), [] __device__() {
+		typedef typename T::value_type value_type;
+		return value_type();
+	});
+}
+
+struct get_color
+{
+	__device__ aks::rx::vec3f operator()(int i, int j, int s) {
+		curandState& st = sts(i, j);
+		float u = (float(i + start.x + curand_uniform(&st)) / float(din->nx));
+		float v = (float(j + start.y + curand_uniform(&st)) / float(din->ny));
+		aks::rx::vec3f col = color(din->max_ray_depth, din->cam.get_ray(u, v, &st), din->dworldview, &st);
+		return col;
+	}
+
+	aks::object_view<InData const> din;
+	aks::multi_dim_vector< curandState, 2 > sts;
+	aks::point<size_t, 3> start;
+
+	get_color(aks::object_view<InData const> adin, aks::multi_dim_vector< curandState, 2 > asts, aks::point<size_t, 3> astart) :
+		din(adin), sts(asts), start(astart) {}
+};
+
 int main()
 {
 	//{
@@ -402,8 +448,8 @@ int main()
 	std::cout << dot(v2, v2) << std::endl;
 	std::cout << v2.len() << std::endl;
 
-	int nx = 2000, ny = 1500, ns = 10;
-	size_t max_ray_depth = 20;
+	int nx = 1920, ny = 1080, ns = 500;
+	size_t max_ray_depth = 50;
 	aks::point<size_t, 2> tile, start;
 	tile.x = nx;
 	tile.y = ny;
@@ -452,49 +498,61 @@ int main()
 		worldview.items(i) = s[i];
 	std::cout << s.size() << std::endl;
 
-	aks::host_multi_dim_vector< vec3f, 2 > data(nx, ny);
-	auto ddata = aks::to_device(data);
 	auto dworld = aks::to_device(world.items);
 	auto dworldview = spheres::view(dworld.view());
 
-	for (size_t x = 0; x < nx; x += tile.x)
-		for (size_t y = 0; y < ny; y += tile.y)
-		{
-			start.x = x;
-			start.y = y;
-			{
-				aks::cuda_sync_context sync_ctxt;
-				InData in = { nx, ny, ns, cam, dworldview, max_ray_depth };
-				aks::cuda_object<InData> inData(in);
-				auto din = inData.cview();
-				aks::naryOpWithIndexTiled(ddata.view(), tile, start, [din] __device__(int i, int j) {
-					unsigned int seed = din->ny * i + j;
-					curandState st;
-					curand_init(seed, 0, 0, &st);
-					vec3f col(0, 0, 0);
-					for (int s = 0; s < din->ns; ++s) {
-						float u = float(i + curand_uniform(&st)) / float(din->nx);
-						float v = float(j + curand_uniform(&st)) / float(din->ny);
-						col += color(din->max_ray_depth, din->cam.get_ray(u, v, &st), din->dworldview, &st);
+	aks::cuda_multi_dim_vector< vec3f, 2 > data(nx, ny);
+	aks::cuda_multi_dim_vector< curandState, 2 > randomStates(nx, ny);
+	aks::cuda_multi_dim_vector< vec3f, 2 > temp(nx, ny);
+
+	{
+		aks::cuda_sync_context sync_ctxt;
+		aks::naryOpWithIndex(randomStates.view(), [ny]__device__(int i, int j) {
+			unsigned int seed = ny * i + j;
+			curandState st;
+			curand_init(seed, 0, 0, &st);
+			return st;
+		});
+	}
+
+	{
+		aks::cuda_sync_context sync_ctxt;
+		InData in = { nx, ny, ns, cam, dworldview, max_ray_depth };
+		aks::cuda_object<InData> inData(in);
+		auto din = inData.cview();
+		auto sts = randomStates.view();
+
+		for (int s = 0; s < ns; ++s) {
+			std::cout << "doing sample " << s << " of " << ns << std::endl;
+			for (size_t x = 0; x < nx; x += tile.x) {
+				for (size_t y = 0; y < ny; y += tile.y)
+				{
+					start.x = x;
+					start.y = y;
+					std::cout << "doing " << start.x << "," << start.y << std::endl;
+					{
+						aks::cuda_sync_context sync_ctxt2;
+						aks::naryOpWithIndexTiled(temp.view(), tile, start, [din, sts, start] __device__(int i, int j) mutable {
+							curandState& st = sts(i + start.x, j + start.y);
+							float u = float(i + curand_uniform(&st)) / float(din->nx);
+							float v = float(j + curand_uniform(&st)) / float(din->ny);
+							return color(din->max_ray_depth, din->cam.get_ray(u, v, &st), din->dworldview, &st);
+						});
+
+						aks::binaryOpInplace(data.view(), temp.cview(), [] __device__(vec3f const& a, vec3f const& b) { return a + b; });
 					}
-					return (col /= float(din->ns)).map_func([](float f) {return sqrt(f); });
-				});
+				}
 			}
-			data << ddata;
-			auto view = data.view();
-			/*
-			for (int j = ny - 1; j >= 0; --j)
-				for (int i = 0; i < nx; ++i) {
-					vec3f col(0, 0, 0);
-					for (int s = 0; s < ns; ++s) {
-						float u = float(i + randZeroToOne()) / float(nx);
-						float v = float(j + randZeroToOne()) / float(ny);
-						col += color(cam.get_ray(u, v), worldview);
-					}
-					view(i, j) = (col /= float(ns)).map_func([](float f) {return sqrt(f); });
-				}*/
-			std::cout << "[writing]..." << x << "," << y << "\n";
-			toPPMFile("D:\\study\\out.ppm", view);
 		}
+
+		aks::unaryOpInplace(data.view(), [ns] __device__(vec3f v) {
+			return (v /= ns).map_func([] __device__(float f) { return sqrt(f); });
+		});
+	}
+
+	auto hdata = to_host(data);
+	auto view = hdata.view();
+	std::cout << "[writing]..."; // << x << "," << y << "\n";
+	toPPMFile("D:\\study\\out.ppm", view);
 	return 0;
 }
